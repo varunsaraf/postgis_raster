@@ -328,22 +328,23 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
     int nBufYSize, GDALDataType eBufType, int nPixelSpace, 
     int nLineSpace)
 {
-    /**
+    /*
      * TODO: Write support not implemented yet
-     **/
+     
     if (eRWFlag == GF_Write) {
         ReportError(CE_Failure, CPLE_NotSupported,
             "Writing through PostGIS Raster band not supported yet");
         
         return CE_Failure;
     }
+    */
 
     /*******************************************************************
      * Do we have overviews that would be appropriate to satisfy this
      * request?                                                   
      ******************************************************************/
     if( (nBufXSize < nXSize || nBufYSize < nYSize) && 
-        GetOverviewCount() > 0 )
+        GetOverviewCount() > 0 && eRWFlag == GF_Read)
     {
         if(OverviewRasterIO(eRWFlag, nXOff, nYOff, nXSize, nYSize, 
             pData, nBufXSize, nBufYSize, eBufType, nPixelSpace, 
@@ -420,6 +421,44 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
     }
 #endif    
     
+    if (eRWFlag == GF_Write)
+    {
+        int nBandDataSize = GDALGetDataTypeSize(eDataType) / 8;
+        int nBufDataSize = GDALGetDataTypeSize(eBufType) / 8;
+        GByte *pabyRaster = NULL;
+        int iBufXOff, iBufYOff, iSrcX, iSrcY, nWordCopy;
+        
+        for (iBufYOff = 0; iBufYOff < nYSize; iBufYOff++)
+        {
+            iSrcY = iBufYOff + nYOff;
+            for (iBufXOff = 0; iBufXOff < nXSize; )
+            {
+                iSrcX = iBufXOff + nXoff;
+                if ((iBufXOff + nBufXSize) < nXSize) //Case-1
+                {
+                    nWordCopy = nBufXSize;
+                }
+                else //Case-2
+                {
+                    nWordCopy = nXSize - iBufXOff;
+                }
+
+                iBufOffset = (iSrcY * nLineSpace) + (iSrcX * nPixelSpace);
+                iDstOff = iBufYOff * nXSize + iBufXOff;
+
+                GDALCopyWords( ((GByte *) pData) + iBufOffset, eBufType, nPixelSpace,
+                            pabyRaster + (size_t)iDstOff * nBandDataSize, eDataType,
+                            nBandDataSize, nWordCopy);
+
+                iBufXOff += nBufXSize;
+                //iBufXOff exceeds nXSize in Case-2 and will not enter the next loop.
+            }
+        }
+        return CE_None;
+    }
+    else
+    {
+
     /*******************************************************************
      * Several tiles: we first look in all our sources caches. Missing
      * blocks are queried
@@ -752,6 +791,8 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
     CPLFree(papsMatchingTiles);
 
     return eErr;
+
+    }
 }
 
 /**
