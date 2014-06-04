@@ -426,7 +426,7 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
         int nBandDataSize = GDALGetDataTypeSize(eDataType) / 8;
         int nBufDataSize = GDALGetDataTypeSize(eBufType) / 8;
         GByte *pabyRaster = NULL;
-        int iBufXOff, iBufYOff, iSrcX, iSrcY, nWordCopy;
+        int iBufXOff, iBufYOff, iBufOffset, iDstOff, iSrcX, iSrcY, nWordCopy;
         
         for (iBufYOff = 0; iBufYOff < nYSize; iBufYOff++)
         {
