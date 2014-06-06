@@ -3665,6 +3665,87 @@ GBool PostGISRasterDataset::PolygonFromCoords(
     return true;
 }
 
+
+// add equivalent variables for: filename, file_clolumn_name
+//copy_statements to be implemented
+GBool PostGISRasterDataset::InsertRecords(
+        PGconn * poConn, const char *pszSchema, 
+        const char *pszTable, const char *pszColumn,
+        const char *pszFilename, const char *pszFileColumnName,
+        GBool bCopyStatements, GByte **pabyRaster, int nTiles)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+    int iTiles;
+    CPLAssert(table != NULL);
+    CPLAssert(column != NULL);
+
+    /* COPY statements */
+    if (bCopyStatements) {
+
+        for (iTiles = 0; iTiles < nTiles; iTiles++) {
+            osCommand.Printf("%s%s%s",
+                pabyRaster[iTiles], (pszFilename != NULL ? "\t" : ""),
+                (pszFilename != NULL ? pszFilename : ""));
+
+//copy to be implemented 
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
+        osCommand.c_str());
+#endif
+
+            poResult = PQexec((poConn, osCommand.c_str());
+            if(poResult == NULL || 
+                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
+                CPLError(CE_Failure, CPLE_AppDefined,
+                        "Error inserting records: %s",
+                        PQerrorMessage(poConn));
+                if (poResult != NULL)
+                    PQclear(poResult);
+
+                return false;
+            }
+        }
+        PQclear(poResult);
+        return true;
+    }
+    /* INSERT statements */
+    else {
+
+        for (iTiles = 0; iTiles < nTiles; iTiles++) {
+            osCommand.Printf("INSERT INTO %s.%s (%s%s%s) VALUES ('%s'::raster%s%s%s);",
+                    (pszSchema != NULL ? pszSchema : ""), pszTable, pszColumn,
+                    (pszFilename != NULL ? "," : ""),
+                    (pszFilename != NULL ? pszFileColumnName : ""),
+                    pabyRaster[iTiles], (pszFilename != NULL ? ",'" : ""),
+                    (pszFilename != NULL ? pszFilename : ""), 
+                    (pszFilename != NULL ? "'" : "")
+                   );
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
+        osCommand.c_str());
+#endif
+
+            poResult = PQexec((poConn, osCommand.c_str());
+            if(poResult == NULL || 
+                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
+                CPLError(CE_Failure, CPLE_AppDefined,
+                        "Error inserting records: %s",
+                        PQerrorMessage(poConn));
+                if (poResult != NULL)
+                    PQclear(poResult);
+
+                return false;
+            }
+        }
+        PQclear(poResult);
+        return true;
+    }
+}
+
+
 /***********************************************************************
  * GDALRegister_PostGISRaster()                
  **********************************************************************/
