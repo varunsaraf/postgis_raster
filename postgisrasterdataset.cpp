@@ -3665,7 +3665,6 @@ GBool PostGISRasterDataset::PolygonFromCoords(
     return true;
 }
 
-
 // add equivalent variables for: filename, file_clolumn_name
 //copy_statements to be implemented
 GBool PostGISRasterDataset::InsertRecords(
@@ -3677,8 +3676,8 @@ GBool PostGISRasterDataset::InsertRecords(
     CPLString osCommand;
     PGresult * poResult = NULL;
     int iTiles;
-    CPLAssert(table != NULL);
-    CPLAssert(column != NULL);
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
 
     /* COPY statements */
     if (bCopyStatements) {
@@ -3720,8 +3719,7 @@ GBool PostGISRasterDataset::InsertRecords(
                     (pszFilename != NULL ? pszFileColumnName : ""),
                     pabyRaster[iTiles], (pszFilename != NULL ? ",'" : ""),
                     (pszFilename != NULL ? pszFilename : ""), 
-                    (pszFilename != NULL ? "'" : "")
-                   );
+                    (pszFilename != NULL ? "'" : ""));
 
 #ifdef DEBUG_QUERY
     CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
@@ -3745,6 +3743,165 @@ GBool PostGISRasterDataset::InsertRecords(
     }
 }
 
+GBool PostGISRasterDataset::DropTable(const char *pszSchema, const char *pszTable)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+    CPLAssert(pszTable != NULL);
+
+    osCommand.Printf("DROP TABLE IF EXISTS %s %s;",
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::DropTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error dropping table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+        
+    PQclear(poResult);
+    return true;
+}
+
+// add equivalent variables for : tablespace, idx_tablespace
+GBool PostGISRasterDataset::CreateTable(
+    const char *pszSchema, const char *pszTable, const char *pszColumn,
+    const char *pszFileColumnName, const char *pszTablespace, 
+    const char *pszIdxTablespace) 
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+    
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    osCommand.Printf("CREATE TABLE %s %s (\"rid\" serial PRIMARY KEY%s%s,%s raster%s%s%s)%s%s;",
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable,
+            (pszIdxTablespace != NULL ? " USING INDEX TABLESPACE " : ""),
+            (pszIdxTablespace != NULL ? pszIdxTablespace : ""),
+            pszColumn,
+            (pszFileColumnName != NULL ? "," : ""),
+            (pszFileColumnName != NULL ? pszFileColumnName : ""),
+            (pszFileColumnName != NULL ? " text" : ""),
+            (pszTablespace != NULL ? " TABLESPACE " : ""),
+            (pszTablespace != NULL ? pszTablespace : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CreateTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error creating table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::CopyFrom(
+    const char *pszSchema, const char *pszTable, const char *pszColumn,
+    const char *pszFilename, const char *pszFileColumnName)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    osCommand.Printf("COPY %s %s (%s%s%s) FROM stdin;",
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable,
+            pszColumn,
+            (pszFilename != NULL ? "," : ""),
+            (pszFilename != NULL ? pszFileColumnName : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CopyFrom(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error while copying from: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::CreateIndex(const char *pszSchema,
+    const char *pszTable, const char *pszColumn,
+    const char *pszTablespace)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+    //_table = chartrim(table, "\"");
+    //_column = chartrim(column, "\"");
+
+    osCommand.Printf("CREATE INDEX \"%s_%s_gist\" ON %s %s USING gist (st_convexhull(%s))%s%s;",
+            pszTable,
+            pszColumn,
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable,
+            pszColumn,
+            (pszTablespace != NULL ? " TABLESPACE " : ""),
+            (pszTablespace != NULL ? pszTablespace : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CreateIndex(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error creating index: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
 
 /***********************************************************************
  * GDALRegister_PostGISRaster()                
