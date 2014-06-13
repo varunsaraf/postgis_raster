@@ -3903,6 +3903,114 @@ GBool PostGISRasterDataset::CreateIndex(const char *pszSchema,
     return true;
 }
 
+GBool PostGISRasterDataset::AnalyzeTable(const char *pszSchema, 
+    const char *pszTable)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+
+    osCommand.Printf("ANALYZE %s %s;",
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::AnalyzeTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error analyzing table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::VacuumTable(const char *pszSchema, 
+    const char *pszTable)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+
+    osCommand.Printf("VACUUM ANALYZE %s %s;",
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::VacuumTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error vacuuming table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+// add equivalent variables for : regular_blocking, max_extent
+GBool PostGISRasterDataset::AddRasterConstraints(
+    const char *pszSchema, const char *pszTable, const char *pszColumn,
+    GBool bRegularBlocking, GBool bMaxExtent)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    osCommand.Printf("SELECT AddRasterConstraints('%s','%s','%s',TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,%s,TRUE,TRUE,TRUE,TRUE,%s);",
+            (pszSchema != NULL ? pszSchema : ""),
+            pszTable,
+            pszColumn,
+            (bRegularBlocking ? "TRUE" : "FALSE"),
+            (bMaxExtent ? "TRUE" : "FALSE"));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::AddRasterConstraints(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec((poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error adding raster constraints: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
 /***********************************************************************
  * GDALRegister_PostGISRaster()                
  **********************************************************************/
