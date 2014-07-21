@@ -275,6 +275,8 @@ public:
     virtual ~PostGISRasterDataset();
     static GDALDataset* Open(GDALOpenInfo *);
     static int Identify(GDALOpenInfo *);
+    static GDALDataset* Create(const char *, int, int, int,
+        GDALDatatype, char **);
     static GDALDataset* CreateCopy(const char *, GDALDataset *, 
         int, char **, GDALProgressFunc, void *);
     static GBool InsertRaster(PGconn *, PostGISRasterDataset *, 
@@ -287,6 +289,18 @@ public:
     CPLErr SetGeoTransform(double *);
     CPLErr GetGeoTransform(double *);
     char **GetFileList();
+
+    GBool InsertRecords(PGconn *, const char *, const char *,
+        const char *, const char *, const char *, GBool, GByte **, int);
+    GBool DropTable();
+    GBool CreateTable(const char *, const char *, const char *);
+    GBool CopyFrom(const char *);
+    GBool CreateIndex(const char *);
+    GBool AnalyzeTable();
+    GBool VacuumTable();
+    GBool AddRasterConstraints(GBool, GBool);
+
+
 
     int    GetOverviewCount();
     PostGISRasterDataset* GetOverviewDS(int iOvr);

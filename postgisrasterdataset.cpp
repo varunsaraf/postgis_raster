@@ -3484,6 +3484,542 @@ PostGISRasterDataset::InsertRaster(PGconn * poConn,
     return true;
 }
 
+
+/********************************************************
+ * \brief Create a copy of a PostGIS Raster dataset.
+ ********************************************************/
+static GDALDataset * PostGISRasterDataset::Create(
+        const char *pszFilename, int nXSize, int nYSize,
+        int nBands, GDALDataType eType, char **papszOptions)
+{
+
+    // Checking connection string
+    if (pszFilename == NULL ||
+            !EQUALN(pszFilename, "PG:", 3)) {
+        /**
+         * The connection string provided is not a valid connection
+         * string.
+         */
+        CPLError( CE_Failure, CPLE_NotSupported, 
+                "PostGIS Raster driver was unable to parse the provided "
+                "connection string." );
+        return NULL;
+    }
+
+    // Opening the Dataset
+    GDALOpenInfo poOpenInfo( pszFilename, GA_Update );
+    PostGISRasterDataset* poRDS = (PostGISRasterDataset *)Open(&poOpenInfo);
+
+    if(!poRDS)
+    {
+        return NULL;
+    }
+
+    PGconn * poConn = NULL;
+    PGresult * poResult = NULL;
+    CPLString osCommand;
+    GBool bInsertSuccess;
+
+    // Checking the creation options for initialization
+    const char *pszFetched = "";
+    char *pszTableOption = NULL;
+//    char *pszBlocking = NULL;
+    char *pszInputFilename = NULL;
+    char *pszTableSpace = NULL;
+    char *pszIndexTableSpace = NULL;
+    GBool bConstraints, bOutDB, bIndex, bVacuum, bCopy;
+    GBool bMaxExtent = 1;
+    
+    pszFetched = CSLFetchNameValue(papszOptions, "TABLEOPTION");
+    if(pszFetched)
+    {
+        pszTableOption = CPLStrdup(pszFetched);
+    }
+
+    pszFetched = CSLFetchNameValue(papszOptions, "BLOCKING");
+/*
+    if(pszFetched)
+    {
+        pszBlocking = CPLStrdup(pszFetched);
+    }
+*/
+    if(pszFetched != NULL && !EQUAL(pszFetched, "NO"))
+    {
+        pszFetched = CSLFetchNameValueDef(papszOptions, "BLOCKXSIZE","128");
+        if(pszFetched)
+        {
+            nTileWidth = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
+        }
+
+        pszFetched = CSLFetchNameValue(papszOptions, "BLOCKYSIZE","128");
+        if(pszFetched)
+        {
+            nTileHeight = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
+        }
+    }
+
+    bConstraints = (bool) CSLFetchBoolean(papszOptions, "CONSTRAINTS", FALSE );
+    if(bConstraints)
+    {
+        bRegularBlocking = (bool) CSLFetchBoolean(papszOptions, "REGULARBLOCKING", FALSE );
+        bMaxExtent = (bool) CSLFetchBoolean(papszOptions, "MAXEXTENT", TRUE );
+    }
+
+    pszFetched = CSLFetchNameValue(papszOptions, "SRID");
+    if(pszFetched)
+    {
+        nSRID = atoi(pszFetched);
+    }
+
+    bOutDB = (bool) CSLFetchBoolean(papszOptions, "OUTDB", FALSE);
+
+    pszFetched = CSLFetchNameValue(papszOptions, "FILENAME");
+    if(pszFetched)
+    {
+        pszInputFilename = CPLStrdup(pszFetched);
+    }
+
+    bIndex = (bool) CSLFetchBoolean(papszOptions, "INDEX", FALSE);
+    bVacuum = (bool) CSLFetchBoolean(papszOptions, "VACUUM", FALSE);
+    bCopy = (bool) CSLFetchBoolean(papszOptions, "COPY", FALSE);
+
+    pszFetched = CSLFetchNameValue(papszOptions, "TABLESPACE");
+    if(pszFetched)
+    {
+        pszTableSpace = CPLStrdup(pszFetched);
+    }
+
+    pszFetched = CSLFetchNameValue(papszOptions, "INDEXTABLESPACE");
+    if(pszFetched)
+    {
+        pszIndexTableSpace = CPLStrdup(pszFetched);
+    }
+
+    // Validating the creation options
+    if(EQUAL(pszTableOption, "APPEND"))
+    {
+        if(pszInputFilename)
+        {
+            CPLError(CE_Failure, CPLE_IllegalArg, 
+                    "Option (FILENAME) cannot be used on a existing PostgreSQL table.");
+            delete poRDS;
+            return NULL;
+        }
+        if(pszTableSpace)
+        {
+            CPLError(CE_Failure, CPLE_IllegalArg, 
+                    "Option (TABLESPACE) cannot be used on a existing PostgreSQL table.");
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    if(!bConstraints)
+    {
+        if(bRegularBlocking)
+        {
+            CPLError(CE_Failure, CPLE_IllegalArg, 
+                    "Option (REGULARBLOCKING) can be used only if option (CONSTRAINTS) is TRUE.");
+            delete poRDS;
+            return NULL;
+        }
+        if(!bMaxExtent)
+        {
+            CPLError(CE_Failure, CPLE_IllegalArg, 
+                    "Option (REGULARBLOCKING) can be used only if option (CONSTRAINTS) is TRUE.");
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    // Creating/Appending table
+    
+    // Drop table
+    if(EQUAL(pszTableOption, "DROP"))
+    {
+        if(!DropTable())
+        {
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    // Create table
+    if(!EQUAL(pszTableOption, "APPEND"))
+    {
+        if(!CreateTable(pszInputFilename, pszTableSpace, pszIndexTableSpace))
+        {
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    // Insert empty raster
+
+    // Create index
+    if(bIndex)
+    {
+        if(!CreateIndex(pszIndexTableSpace))
+        {
+            delete poRDS;
+            return NULL;
+        }
+        if(!AnalyzeTable())
+        {
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    // Add constraints
+    if(bConstraints)
+    {
+        if(!AddRasterConstraints(bRegularBlocking, bMaxExtent))
+        {
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    // Maintain(Vacuum) table
+    if(bVacuum)
+    {
+        if(!VacuumTable())
+        {
+            delete poRDS;
+            return NULL;
+        }
+    }
+
+    if(pszTableOption)
+        CPLFree(pszTableOption);
+    if(pszInputFilename)
+        CPLFree(pszInputFilename);
+    if(TableSpace)
+        CPLFree(TableSpace);
+    if(pszIndexTableSpace)
+        CPLFree(pszIndexTableSpace);
+
+    return poRDS;
+}
+
+// add equivalent variables for: filename, file_clolumn_name
+//copy_statements to be implemented
+GBool PostGISRasterDataset::InsertRecords(
+        PGconn * poConn, const char *pszSchema, 
+        const char *pszTable, const char *pszColumn,
+        const char *pszFilename, const char *pszFileColumnName,
+        GBool bCopyStatements, GByte **pabyRaster, int nTiles)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+    int iTiles;
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    /* COPY statements */
+    if (bCopyStatements) {
+
+        for (iTiles = 0; iTiles < nTiles; iTiles++) {
+            osCommand.Printf("%s%s%s",
+                pabyRaster[iTiles], (pszFilename != NULL ? "\t" : ""),
+                (pszFilename != NULL ? pszFilename : ""));
+
+//copy to be implemented 
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
+        osCommand.c_str());
+#endif
+
+            poResult = PQexec(poConn, osCommand.c_str());
+            if(poResult == NULL || 
+                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
+                CPLError(CE_Failure, CPLE_AppDefined,
+                        "Error inserting records: %s",
+                        PQerrorMessage(poConn));
+                if (poResult != NULL)
+                    PQclear(poResult);
+
+                return false;
+            }
+        }
+        PQclear(poResult);
+        return true;
+    }
+    /* INSERT statements */
+    else {
+
+        for (iTiles = 0; iTiles < nTiles; iTiles++) {
+            osCommand.Printf("INSERT INTO %s.%s (%s%s%s) VALUES ('%s'::raster%s%s%s);",
+                    (pszSchema != NULL ? pszSchema : ""), pszTable, pszColumn,
+                    (pszFilename != NULL ? "," : ""),
+                    (pszFilename != NULL ? pszFileColumnName : ""),
+                    pabyRaster[iTiles], (pszFilename != NULL ? ",'" : ""),
+                    (pszFilename != NULL ? pszFilename : ""), 
+                    (pszFilename != NULL ? "'" : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
+        osCommand.c_str());
+#endif
+
+            poResult = PQexec(poConn, osCommand.c_str());
+            if(poResult == NULL || 
+                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
+                CPLError(CE_Failure, CPLE_AppDefined,
+                        "Error inserting records: %s",
+                        PQerrorMessage(poConn));
+                if (poResult != NULL)
+                    PQclear(poResult);
+
+                return false;
+            }
+        }
+        PQclear(poResult);
+        return true;
+    }
+}
+
+GBool PostGISRasterDataset::DropTable()
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+    CPLAssert(pszTable != NULL);
+
+    osCommand.Printf("DROP TABLE IF EXISTS %s.%s;", pszSchema, pszTable);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::DropTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error dropping table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+        
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::CreateTable(const char *pszInputFilename,
+    const char *pszTableSpace, const char *pszIndexTableSpace) 
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+    
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    osCommand.Printf("CREATE TABLE %s.%s (\"rid\" serial PRIMARY KEY%s%s,%s raster%s)%s%s;",
+            pszSchema, pszTable,
+            (pszIndexTableSpace != NULL ? " USING INDEX TABLESPACE " : ""),
+            (pszIndexTableSpace != NULL ? pszIndexTableSpace : ""),
+            pszColumn,
+            (pszInputFilename != NULL ? ",filename text" : ""),
+            (pszTableSpace != NULL ? " TABLESPACE " : ""),
+            (pszTableSpace != NULL ? pszTableSpace : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CreateTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error creating table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::CopyFrom(const char *pszInputFilename)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    osCommand.Printf("COPY %s.%s (%s%s) FROM stdin;",
+            pszSchema, pszTable, pszColumn,
+            (pszInputFilename != NULL ? ",filename" : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CopyFrom(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error while copying from: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::CreateIndex(const char *pszIndexTableSpace)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+    //_table = chartrim(table, "\"");
+    //_column = chartrim(column, "\"");
+
+    osCommand.Printf("CREATE INDEX \"%s_%s_gist\" ON %s.%s USING gist (st_convexhull(%s))%s%s;",
+            pszTable, pszColumn, pszSchema, pszTable, pszColumn,
+            (pszIndexTableSpace != NULL ? " TABLESPACE " : ""),
+            (pszIndexTableSpace != NULL ? pszIndexTableSpace : ""));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CreateIndex(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error creating index: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::AnalyzeTable()
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+
+    osCommand.Printf("ANALYZE %s.%s;", pszSchema, pszTable);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::AnalyzeTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error analyzing table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+GBool PostGISRasterDataset::VacuumTable()
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+
+    osCommand.Printf("VACUUM ANALYZE %s.%s;", pszSchema, pszTable);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::VacuumTable(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error vacuuming table: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
+// add equivalent variables for : regular_blocking, max_extent
+GBool PostGISRasterDataset::AddRasterConstraints(GBool bRegularBlocking, GBool bMaxExtent)
+{
+    CPLString osCommand;
+    PGresult * poResult = NULL;
+
+    CPLAssert(pszTable != NULL);
+    CPLAssert(pszColumn != NULL);
+
+    osCommand.Printf("SELECT AddRasterConstraints('%s','%s','%s',TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,%s,TRUE,TRUE,TRUE,TRUE,%s);",
+            pszSchema, pszTable, pszColumn,
+            (bRegularBlocking ? "TRUE" : "FALSE"),
+            (bMaxExtent ? "TRUE" : "FALSE"));
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::AddRasterConstraints(): Query = %s",
+        osCommand.c_str());
+#endif
+
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_COMMAND_OK)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error adding raster constraints: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
+
+        return false;
+    }
+
+    PQclear(poResult);
+    return true;
+}
+
 /*********************************************************
  * \brief Delete a PostGIS Raster dataset. 
  *********************************************************/
@@ -3665,352 +4201,6 @@ GBool PostGISRasterDataset::PolygonFromCoords(
     return true;
 }
 
-// add equivalent variables for: filename, file_clolumn_name
-//copy_statements to be implemented
-GBool PostGISRasterDataset::InsertRecords(
-        PGconn * poConn, const char *pszSchema, 
-        const char *pszTable, const char *pszColumn,
-        const char *pszFilename, const char *pszFileColumnName,
-        GBool bCopyStatements, GByte **pabyRaster, int nTiles)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-    int iTiles;
-    CPLAssert(pszTable != NULL);
-    CPLAssert(pszColumn != NULL);
-
-    /* COPY statements */
-    if (bCopyStatements) {
-
-        for (iTiles = 0; iTiles < nTiles; iTiles++) {
-            osCommand.Printf("%s%s%s",
-                pabyRaster[iTiles], (pszFilename != NULL ? "\t" : ""),
-                (pszFilename != NULL ? pszFilename : ""));
-
-//copy to be implemented 
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
-        osCommand.c_str());
-#endif
-
-            poResult = PQexec((poConn, osCommand.c_str());
-            if(poResult == NULL || 
-                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
-                CPLError(CE_Failure, CPLE_AppDefined,
-                        "Error inserting records: %s",
-                        PQerrorMessage(poConn));
-                if (poResult != NULL)
-                    PQclear(poResult);
-
-                return false;
-            }
-        }
-        PQclear(poResult);
-        return true;
-    }
-    /* INSERT statements */
-    else {
-
-        for (iTiles = 0; iTiles < nTiles; iTiles++) {
-            osCommand.Printf("INSERT INTO %s.%s (%s%s%s) VALUES ('%s'::raster%s%s%s);",
-                    (pszSchema != NULL ? pszSchema : ""), pszTable, pszColumn,
-                    (pszFilename != NULL ? "," : ""),
-                    (pszFilename != NULL ? pszFileColumnName : ""),
-                    pabyRaster[iTiles], (pszFilename != NULL ? ",'" : ""),
-                    (pszFilename != NULL ? pszFilename : ""), 
-                    (pszFilename != NULL ? "'" : ""));
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
-        osCommand.c_str());
-#endif
-
-            poResult = PQexec((poConn, osCommand.c_str());
-            if(poResult == NULL || 
-                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
-                CPLError(CE_Failure, CPLE_AppDefined,
-                        "Error inserting records: %s",
-                        PQerrorMessage(poConn));
-                if (poResult != NULL)
-                    PQclear(poResult);
-
-                return false;
-            }
-        }
-        PQclear(poResult);
-        return true;
-    }
-}
-
-GBool PostGISRasterDataset::DropTable(const char *pszSchema, const char *pszTable)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-    CPLAssert(pszTable != NULL);
-
-    osCommand.Printf("DROP TABLE IF EXISTS %s %s;",
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable);
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::DropTable(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error dropping table: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-        
-    PQclear(poResult);
-    return true;
-}
-
-// add equivalent variables for : tablespace, idx_tablespace
-GBool PostGISRasterDataset::CreateTable(
-    const char *pszSchema, const char *pszTable, const char *pszColumn,
-    const char *pszFileColumnName, const char *pszTablespace, 
-    const char *pszIdxTablespace) 
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-    
-    CPLAssert(pszTable != NULL);
-    CPLAssert(pszColumn != NULL);
-
-    osCommand.Printf("CREATE TABLE %s %s (\"rid\" serial PRIMARY KEY%s%s,%s raster%s%s%s)%s%s;",
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable,
-            (pszIdxTablespace != NULL ? " USING INDEX TABLESPACE " : ""),
-            (pszIdxTablespace != NULL ? pszIdxTablespace : ""),
-            pszColumn,
-            (pszFileColumnName != NULL ? "," : ""),
-            (pszFileColumnName != NULL ? pszFileColumnName : ""),
-            (pszFileColumnName != NULL ? " text" : ""),
-            (pszTablespace != NULL ? " TABLESPACE " : ""),
-            (pszTablespace != NULL ? pszTablespace : ""));
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CreateTable(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error creating table: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-
-    PQclear(poResult);
-    return true;
-}
-
-GBool PostGISRasterDataset::CopyFrom(
-    const char *pszSchema, const char *pszTable, const char *pszColumn,
-    const char *pszFilename, const char *pszFileColumnName)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-
-    CPLAssert(pszTable != NULL);
-    CPLAssert(pszColumn != NULL);
-
-    osCommand.Printf("COPY %s %s (%s%s%s) FROM stdin;",
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable,
-            pszColumn,
-            (pszFilename != NULL ? "," : ""),
-            (pszFilename != NULL ? pszFileColumnName : ""));
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CopyFrom(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error while copying from: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-
-    PQclear(poResult);
-    return true;
-}
-
-GBool PostGISRasterDataset::CreateIndex(const char *pszSchema,
-    const char *pszTable, const char *pszColumn,
-    const char *pszTablespace)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-
-    CPLAssert(pszTable != NULL);
-    CPLAssert(pszColumn != NULL);
-    //_table = chartrim(table, "\"");
-    //_column = chartrim(column, "\"");
-
-    osCommand.Printf("CREATE INDEX \"%s_%s_gist\" ON %s %s USING gist (st_convexhull(%s))%s%s;",
-            pszTable,
-            pszColumn,
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable,
-            pszColumn,
-            (pszTablespace != NULL ? " TABLESPACE " : ""),
-            (pszTablespace != NULL ? pszTablespace : ""));
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::CreateIndex(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error creating index: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-
-    PQclear(poResult);
-    return true;
-}
-
-GBool PostGISRasterDataset::AnalyzeTable(const char *pszSchema, 
-    const char *pszTable)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-
-    CPLAssert(pszTable != NULL);
-
-    osCommand.Printf("ANALYZE %s %s;",
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable);
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::AnalyzeTable(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error analyzing table: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-
-    PQclear(poResult);
-    return true;
-}
-
-GBool PostGISRasterDataset::VacuumTable(const char *pszSchema, 
-    const char *pszTable)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-
-    CPLAssert(pszTable != NULL);
-
-    osCommand.Printf("VACUUM ANALYZE %s %s;",
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable);
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::VacuumTable(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error vacuuming table: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-
-    PQclear(poResult);
-    return true;
-}
-
-// add equivalent variables for : regular_blocking, max_extent
-GBool PostGISRasterDataset::AddRasterConstraints(
-    const char *pszSchema, const char *pszTable, const char *pszColumn,
-    GBool bRegularBlocking, GBool bMaxExtent)
-{
-    CPLString osCommand;
-    PGresult * poResult = NULL;
-
-    CPLAssert(pszTable != NULL);
-    CPLAssert(pszColumn != NULL);
-
-    osCommand.Printf("SELECT AddRasterConstraints('%s','%s','%s',TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,%s,TRUE,TRUE,TRUE,TRUE,%s);",
-            (pszSchema != NULL ? pszSchema : ""),
-            pszTable,
-            pszColumn,
-            (bRegularBlocking ? "TRUE" : "FALSE"),
-            (bMaxExtent ? "TRUE" : "FALSE"));
-
-#ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::AddRasterConstraints(): Query = %s",
-        osCommand.c_str());
-#endif
-
-    poResult = PQexec((poConn, osCommand.c_str());
-    if(poResult == NULL || 
-        PQresultStatus(poResult) != PGRES_COMMAND_OK)
-    {
-        CPLError(CE_Failure, CPLE_AppDefined,
-                "Error adding raster constraints: %s",
-                PQerrorMessage(poConn));
-        if (poResult != NULL)
-            PQclear(poResult);
-
-        return false;
-    }
-
-    PQclear(poResult);
-    return true;
-}
-
 /***********************************************************************
  * GDALRegister_PostGISRaster()                
  **********************************************************************/
@@ -4027,13 +4217,70 @@ void GDALRegister_PostGISRaster() {
         poDriver->SetMetadataItem(GDAL_DMD_LONGNAME,
                 "PostGIS Raster driver");
         poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
+        poDriver->SetMetadataItem( GDAL_DMD_CREATIONOPTIONLIST,
+"<CreationOptionList>"
+    "<Option name='TABLEOPTION' type='string-select' description='Table creation option' default='NEW'>"
+        "<Value>NEW</Value>"
+        "<Value>APPEND</Value>"
+        "<Value>DROP</Value>"
+//        "<Value>PREPARE</Value>"
+    "</Option>"
+
+    "<Option name='CONSTRAINTS' type='boolean' "
+        "description='Apply raster constraints' default='FALSE'/>"
+    
+    "<Option name='REGULARBLOCKING' type='boolean' "
+        "description='Set the regular blocking constraint (applied only with raster constraints)'"
+        "default='FALSE'/>"
+    
+    "<Option name='MAXEXTENT' type='boolean' "
+        "description='Disable setting the max extent constraint (applied only with raster constraints)'"
+        "default='TRUE'/>"
+    
+    "<Option name='SRID' type='int' description='Overwrite EPSG code' default='0'/>"
+    
+    "<Option name='BLOCKING' type='string-select'" 
+        "description='Cut raster into tiles to be inserted one per table row' default='NO'>"
+        "<Value>YES</Value>"
+        "<Value>NO</Value>"
+        "<Value>AUTO</Value>"
+    "</Option>"
+    
+    "<Option name='BLOCKXSIZE' type='int' description='Column Block Size' default='128'/>"
+    
+    "<Option name='BLOCKYSIZE' type='int' description='Row Block Size' default='128'/>"
+    
+    "<Option name='OUTDB' type='boolean'"
+        "description='Register the raster as a filesystem (out-db) raster' default='FALSE'/>"
+
+//    Handled in "pszFilename" connection string
+//    "<Option name='COLUMNNAME' type='string'"
+//        "description='Specify name of destination raster column, default is rast'/>"
+    
+    "<Option name='FILENAME' type='string'"
+        "description='Name of the input file. Add a column, filename, with the name of the file'/>"
+
+    "<Option name='INDEX' type='boolean'"
+        "description='Create a GiST index on the raster column' default='FALSE'/>"
+
+    "<Option name='VACUUM' type='boolean'"
+        "description='Vacuum analyze the raster table' default='FALSE'/>"
+
+    "<Option name='TABLESPACE' type='string' description='Specify the tablespace for the new table'/>"
+
+    "<Option name='INDEXTABLESPACE' type='string' description='Specify the tablespace for the table index'/>"
+
+    "<Option name='COPY' type='boolean'"
+        "description='Use copy statements instead of insert statements' default='FALSE'/>"
+
+"</CreationOptionList>" );
 
         poDriver->pfnOpen = PostGISRasterDataset::Open;
         poDriver->pfnIdentify = PostGISRasterDataset::Identify;
+        poDriver->pfnCreate = PostGISRasterDataset::Create;
         poDriver->pfnCreateCopy = PostGISRasterDataset::CreateCopy;
         poDriver->pfnDelete = PostGISRasterDataset::Delete;
 
         GetGDALDriverManager()->RegisterDriver(poDriver);
     }
 }
-
