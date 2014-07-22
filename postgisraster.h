@@ -290,7 +290,7 @@ public:
     CPLErr GetGeoTransform(double *);
     char **GetFileList();
 
-    GBool InsertRecords(const char *);
+    GBool InsertEmptyRaster(const char *);
     GBool DropTable();
     GBool CreateTable(const char *, const char *, const char *);
     GBool CopyFrom(const char *);

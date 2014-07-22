@@ -3664,7 +3664,7 @@ GDALDataset * PostGISRasterDataset::Create(
 
     // Insert empty raster
     if(poRDS->nRasterXSize == 0 || poRDS->nRasterYSize == 0 || poRDS->nSrid == -1 ||
-        !poRDS->InsertRecords(pszInputFilename))
+        !poRDS->InsertEmptyRaster(pszInputFilename))
     {
             delete poRDS;
             poRDS = NULL;
@@ -3725,7 +3725,7 @@ GDALDataset * PostGISRasterDataset::Create(
 
 // add equivalent variables for: filename, file_clolumn_name
 //copy_statements to be implemented
-GBool PostGISRasterDataset::InsertRecords(const char *pszInputFilename)
+GBool PostGISRasterDataset::InsertEmptyRaster(const char *pszInputFilename)
 {
     CPLString osCommand;
     PGresult * poResult = NULL;
@@ -3745,7 +3745,7 @@ GBool PostGISRasterDataset::InsertRecords(const char *pszInputFilename)
  
 
 #ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertEmptyRaster(): Query = %s",
         osCommand.c_str());
 #endif
 
@@ -3782,7 +3782,7 @@ GBool PostGISRasterDataset::InsertRecords(const char *pszInputFilename)
             (pszInputFilename != NULL ? "'" : ""));
 
 #ifdef DEBUG_QUERY
-    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
+    CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertEmptyRaster(): Query = %s",
             osCommand.c_str());
 #endif
 
