@@ -276,7 +276,7 @@ public:
     static GDALDataset* Open(GDALOpenInfo *);
     static int Identify(GDALOpenInfo *);
     static GDALDataset* Create(const char *, int, int, int,
-        GDALDatatype, char **);
+        GDALDataType, char **);
     static GDALDataset* CreateCopy(const char *, GDALDataset *, 
         int, char **, GDALProgressFunc, void *);
     static GBool InsertRaster(PGconn *, PostGISRasterDataset *, 

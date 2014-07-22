@@ -3488,7 +3488,7 @@ PostGISRasterDataset::InsertRaster(PGconn * poConn,
 /********************************************************
  * \brief Create a copy of a PostGIS Raster dataset.
  ********************************************************/
-static GDALDataset * PostGISRasterDataset::Create(
+GDALDataset * PostGISRasterDataset::Create(
         const char *pszFilename, int nXSize, int nYSize,
         int nBands, GDALDataType eType, char **papszOptions)
 {
@@ -3515,10 +3515,12 @@ static GDALDataset * PostGISRasterDataset::Create(
         return NULL;
     }
 
+/*
     PGconn * poConn = NULL;
     PGresult * poResult = NULL;
     CPLString osCommand;
     GBool bInsertSuccess;
+*/
 
     // Checking the creation options for initialization
     const char *pszFetched = "";
@@ -3548,27 +3550,27 @@ static GDALDataset * PostGISRasterDataset::Create(
         pszFetched = CSLFetchNameValueDef(papszOptions, "BLOCKXSIZE","128");
         if(pszFetched)
         {
-            nTileWidth = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
+            poRDS->nTileWidth = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
         }
 
-        pszFetched = CSLFetchNameValue(papszOptions, "BLOCKYSIZE","128");
+        pszFetched = CSLFetchNameValueDef(papszOptions, "BLOCKYSIZE","128");
         if(pszFetched)
         {
-            nTileHeight = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
+            poRDS->nTileHeight = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
         }
     }
 
     bConstraints = (bool) CSLFetchBoolean(papszOptions, "CONSTRAINTS", FALSE );
     if(bConstraints)
     {
-        bRegularBlocking = (bool) CSLFetchBoolean(papszOptions, "REGULARBLOCKING", FALSE );
+        poRDS->bRegularBlocking = (bool) CSLFetchBoolean(papszOptions, "REGULARBLOCKING", FALSE );
         bMaxExtent = (bool) CSLFetchBoolean(papszOptions, "MAXEXTENT", TRUE );
     }
 
     pszFetched = CSLFetchNameValue(papszOptions, "SRID");
     if(pszFetched)
     {
-        nSRID = atoi(pszFetched);
+        poRDS->nSrid = atoi(pszFetched);
     }
 
     bOutDB = (bool) CSLFetchBoolean(papszOptions, "OUTDB", FALSE);
@@ -3603,6 +3605,7 @@ static GDALDataset * PostGISRasterDataset::Create(
             CPLError(CE_Failure, CPLE_IllegalArg, 
                     "Option (FILENAME) cannot be used on a existing PostgreSQL table.");
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
         if(pszTableSpace)
@@ -3610,17 +3613,19 @@ static GDALDataset * PostGISRasterDataset::Create(
             CPLError(CE_Failure, CPLE_IllegalArg, 
                     "Option (TABLESPACE) cannot be used on a existing PostgreSQL table.");
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
 
     if(!bConstraints)
     {
-        if(bRegularBlocking)
+        if(poRDS->bRegularBlocking)
         {
             CPLError(CE_Failure, CPLE_IllegalArg, 
                     "Option (REGULARBLOCKING) can be used only if option (CONSTRAINTS) is TRUE.");
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
         if(!bMaxExtent)
@@ -3628,6 +3633,7 @@ static GDALDataset * PostGISRasterDataset::Create(
             CPLError(CE_Failure, CPLE_IllegalArg, 
                     "Option (REGULARBLOCKING) can be used only if option (CONSTRAINTS) is TRUE.");
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
@@ -3637,9 +3643,10 @@ static GDALDataset * PostGISRasterDataset::Create(
     // Drop table
     if(EQUAL(pszTableOption, "DROP"))
     {
-        if(!DropTable())
+        if(!poRDS->DropTable())
         {
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
@@ -3647,9 +3654,10 @@ static GDALDataset * PostGISRasterDataset::Create(
     // Create table
     if(!EQUAL(pszTableOption, "APPEND"))
     {
-        if(!CreateTable(pszInputFilename, pszTableSpace, pszIndexTableSpace))
+        if(!poRDS->CreateTable(pszInputFilename, pszTableSpace, pszIndexTableSpace))
         {
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
@@ -3659,14 +3667,16 @@ static GDALDataset * PostGISRasterDataset::Create(
     // Create index
     if(bIndex)
     {
-        if(!CreateIndex(pszIndexTableSpace))
+        if(!poRDS->CreateIndex(pszIndexTableSpace))
         {
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
-        if(!AnalyzeTable())
+        if(!poRDS->AnalyzeTable())
         {
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
@@ -3674,9 +3684,10 @@ static GDALDataset * PostGISRasterDataset::Create(
     // Add constraints
     if(bConstraints)
     {
-        if(!AddRasterConstraints(bRegularBlocking, bMaxExtent))
+        if(!poRDS->AddRasterConstraints(poRDS->bRegularBlocking, bMaxExtent))
         {
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
@@ -3684,9 +3695,10 @@ static GDALDataset * PostGISRasterDataset::Create(
     // Maintain(Vacuum) table
     if(bVacuum)
     {
-        if(!VacuumTable())
+        if(!poRDS->VacuumTable())
         {
             delete poRDS;
+            poRDS = NULL;
             return NULL;
         }
     }
@@ -3695,8 +3707,8 @@ static GDALDataset * PostGISRasterDataset::Create(
         CPLFree(pszTableOption);
     if(pszInputFilename)
         CPLFree(pszInputFilename);
-    if(TableSpace)
-        CPLFree(TableSpace);
+    if(pszTableSpace)
+        CPLFree(pszTableSpace);
     if(pszIndexTableSpace)
         CPLFree(pszIndexTableSpace);
 
