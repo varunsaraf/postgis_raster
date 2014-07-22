@@ -3663,6 +3663,14 @@ GDALDataset * PostGISRasterDataset::Create(
     }
 
     // Insert empty raster
+    if(poRDS->nRasterXSize == 0 || poRDS->nRasterYSize == 0 || poRDS->nSrid == -1 ||
+        !poRDS->InsertRecords(pszInputFilename))
+    {
+            delete poRDS;
+            poRDS = NULL;
+            return NULL;
+    }
+
 
     // Create index
     if(bIndex)
@@ -3717,19 +3725,16 @@ GDALDataset * PostGISRasterDataset::Create(
 
 // add equivalent variables for: filename, file_clolumn_name
 //copy_statements to be implemented
-GBool PostGISRasterDataset::InsertRecords(
-        PGconn * poConn, const char *pszSchema, 
-        const char *pszTable, const char *pszColumn,
-        const char *pszFilename, const char *pszFileColumnName,
-        GBool bCopyStatements, GByte **pabyRaster, int nTiles)
+GBool PostGISRasterDataset::InsertRecords(const char *pszInputFilename)
 {
     CPLString osCommand;
     PGresult * poResult = NULL;
-    int iTiles;
     CPLAssert(pszTable != NULL);
     CPLAssert(pszColumn != NULL);
 
-    /* COPY statements */
+/* copy to be implemented
+
+     COPY statements 
     if (bCopyStatements) {
 
         for (iTiles = 0; iTiles < nTiles; iTiles++) {
@@ -3737,7 +3742,7 @@ GBool PostGISRasterDataset::InsertRecords(
                 pabyRaster[iTiles], (pszFilename != NULL ? "\t" : ""),
                 (pszFilename != NULL ? pszFilename : ""));
 
-//copy to be implemented 
+ 
 
 #ifdef DEBUG_QUERY
     CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
@@ -3759,38 +3764,42 @@ GBool PostGISRasterDataset::InsertRecords(
         PQclear(poResult);
         return true;
     }
+*/    
     /* INSERT statements */
-    else {
-
-        for (iTiles = 0; iTiles < nTiles; iTiles++) {
-            osCommand.Printf("INSERT INTO %s.%s (%s%s%s) VALUES ('%s'::raster%s%s%s);",
-                    (pszSchema != NULL ? pszSchema : ""), pszTable, pszColumn,
-                    (pszFilename != NULL ? "," : ""),
-                    (pszFilename != NULL ? pszFileColumnName : ""),
-                    pabyRaster[iTiles], (pszFilename != NULL ? ",'" : ""),
-                    (pszFilename != NULL ? pszFilename : ""), 
-                    (pszFilename != NULL ? "'" : ""));
+    osCommand.Printf("INSERT INTO %s.%s (%s%s) VALUES "
+            "(ST_MakeEmptyRaster(%d,%d,%f,%f,%f,%f,%f,%f,%d)%s%s%s);",
+            pszSchema, pszTable, pszColumn,
+            (pszInputFilename != NULL ? ",filename" : ""),
+            nRasterXSize, nRasterYSize,
+            adfGeoTransform[GEOTRSFRM_TOPLEFT_X],
+            adfGeoTransform[GEOTRSFRM_TOPLEFT_Y],
+            adfGeoTransform[GEOTRSFRM_WE_RES],
+            adfGeoTransform[GEOTRSFRM_NS_RES], 
+            adfGeoTransform[GEOTRSFRM_ROTATION_PARAM1],
+            adfGeoTransform[GEOTRSFRM_ROTATION_PARAM2],
+            nSrid, (pszInputFilename != NULL ? ",'" : ""),
+            (pszInputFilename != NULL ? pszInputFilename : ""), 
+            (pszInputFilename != NULL ? "'" : ""));
 
 #ifdef DEBUG_QUERY
     CPLDebug("PostGIS_Raster", "PostGISRasterDataset::InsertRecords(): Query = %s",
-        osCommand.c_str());
+            osCommand.c_str());
 #endif
 
-            poResult = PQexec(poConn, osCommand.c_str());
-            if(poResult == NULL || 
-                PQresultStatus(poResult) != PGRES_COMMAND_OK) {
-                CPLError(CE_Failure, CPLE_AppDefined,
-                        "Error inserting records: %s",
-                        PQerrorMessage(poConn));
-                if (poResult != NULL)
-                    PQclear(poResult);
+    poResult = PQexec(poConn, osCommand.c_str());
+    if(poResult == NULL || 
+            PQresultStatus(poResult) != PGRES_COMMAND_OK) {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                "Error inserting records: %s",
+                PQerrorMessage(poConn));
+        if (poResult != NULL)
+            PQclear(poResult);
 
-                return false;
-            }
-        }
-        PQclear(poResult);
-        return true;
+        return false;
     }
+
+    PQclear(poResult);
+    return true;
 }
 
 GBool PostGISRasterDataset::DropTable()
@@ -4005,7 +4014,8 @@ GBool PostGISRasterDataset::AddRasterConstraints(GBool bRegularBlocking, GBool b
     CPLAssert(pszTable != NULL);
     CPLAssert(pszColumn != NULL);
 
-    osCommand.Printf("SELECT AddRasterConstraints('%s','%s','%s',TRUE,TRUE,TRUE,TRUE,TRUE,TRUE,%s,TRUE,TRUE,TRUE,TRUE,%s);",
+    osCommand.Printf("SELECT AddRasterConstraints('%s','%s','%s',TRUE,TRUE,TRUE,"
+            "TRUE,TRUE,TRUE,%s,TRUE,TRUE,TRUE,TRUE,%s);",
             pszSchema, pszTable, pszColumn,
             (bRegularBlocking ? "TRUE" : "FALSE"),
             (bMaxExtent ? "TRUE" : "FALSE"));
