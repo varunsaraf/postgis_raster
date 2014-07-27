@@ -355,6 +355,18 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
 
     PostGISRasterDataset * poRDS = (PostGISRasterDataset *)poDS;
 
+    if (eRWFlag == GF_Write)
+    {
+        if(poRDS->nTileWidth != 0)
+            nBlockXSize = poRDS->nTileWidth;
+        if(poRDS->nTileHeight != 0)
+            nBlockYSize = poRDS->nTileHeight;
+
+        return GDALRasterBand::IRasterIO(eRWFlag, nXOff, nYOff, nXSize, 
+            nYSize, pData, nBufXSize, nBufYSize, eBufType, nPixelSpace, 
+            nLineSpace);
+    }
+
     int bSameWindowAsOtherBand =
         (nXOff == poRDS->nXOffPrev &&
          nYOff == poRDS->nYOffPrev &&
@@ -420,9 +432,14 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
             nLineSpace);
     }
 #endif    
-    
+
+/*
     if (eRWFlag == GF_Write)
     {
+        if(poRDS->nTileWidth != 0)
+            nBlockXSize = poRDS->nTileWidth;
+        if(poRDS->nTileHeight != 0)
+            nBlockYSize = poRDS->nTileHeight;
         int nBandDataSize = GDALGetDataTypeSize(eDataType) / 8;
         int nBufDataSize = GDALGetDataTypeSize(eBufType) / 8;
         GByte *pabyRaster = NULL;
@@ -433,7 +450,7 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
             iSrcY = iBufYOff + nYOff;
             for (iBufXOff = 0; iBufXOff < nXSize; )
             {
-                iSrcX = iBufXOff + nXoff;
+                iSrcX = iBufXOff + nXOff;
                 if ((iBufXOff + nBufXSize) < nXSize) //Case-1
                 {
                     nWordCopy = nBufXSize;
@@ -458,7 +475,7 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
     }
     else
     {
-
+*/
     /*******************************************************************
      * Several tiles: we first look in all our sources caches. Missing
      * blocks are queried
@@ -792,8 +809,214 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
 
     return eErr;
 
-    }
 }
+
+/*****************************************************
+ * \brief Write a natural block of raster band data
+ *****************************************************/
+CPLErr PostGISRasterRasterBand::IWriteBlock(int nBlockXOff, 
+        int nBlockYOff, void * pImage)
+{
+    PGresult * poResult = NULL;
+    CPLString osCommand;
+    int nXOff = 0;
+    int nYOff = 0;
+    int nNaturalBlockXSize = 0;
+    int nNaturalBlockYSize = 0;
+    double adfProjWin[8];
+    PostGISRasterDataset * poRDS = (PostGISRasterDataset *)poDS;
+    
+    int nPixelSize = GDALGetDataTypeSize(eDataType) / 8;
+    
+    // Construct a polygon to intersect with
+    GetBlockSize(&nNaturalBlockXSize, &nNaturalBlockYSize);
+    
+    nXOff = nBlockXOff * nNaturalBlockXSize;
+    nYOff = nBlockYOff * nNaturalBlockYSize;
+    
+    poRDS->PolygonFromCoords(nXOff, nYOff, nXOff + nNaturalBlockXSize, nYOff + nNaturalBlockYSize, adfProjWin);
+    
+    // Raise the query : get primary key(ASSUMING rid) and number of bands
+    osCommand.Printf("SELECT rid,st_numbands(%s) FROM %s.%s "
+            "WHERE st_intersects(%s, ST_PolygonFromText"
+            "('POLYGON((%.17f %.17f, %.17f %.17f, %.17f %.17f, %.17f "
+            "%.17f, %.17f %.17f))', %d))", pszColumn, pszSchema, 
+            pszTable, pszColumn, adfProjWin[0], adfProjWin[1], 
+            adfProjWin[2], adfProjWin[3],  adfProjWin[4], adfProjWin[5], 
+            adfProjWin[6], adfProjWin[7], adfProjWin[0], adfProjWin[1], 
+            poRDS->nSrid);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", 
+        "PostGISRasterRasterBand::IWriteBlock(): Query = %s", 
+            osCommand.c_str());
+#endif
+
+    poResult = PQexec(poRDS->poConn, osCommand.c_str());
+    if (poResult == NULL || 
+        PQresultStatus(poResult) != PGRES_TUPLES_OK || 
+        PQntuples(poResult) < 0) {
+        
+        if (poResult)
+            PQclear(poResult);
+ 
+        ReportError(CE_Failure, CPLE_AppDefined, 
+            "Error retrieving raster data FROM database");
+
+        CPLDebug("PostGIS_Raster", 
+            "PostGISRasterRasterBand::IWriteBlock(): %s", 
+                PQerrorMessage(poRDS->poConn));
+        
+        return CE_Failure;  
+    }
+
+    /**
+     * No data. Error as at least one raster(maybe empty)
+     * should exist if we are in a PostGISRasterRasterBand.
+     **/
+    else if (PQntuples(poResult) == 0) {
+        PQclear(poResult);
+        
+        ReportError(CE_Failure, CPLE_AppDefined, 
+            "Error writing new band as no empty raster created");
+
+        CPLDebug("PostGIS_Raster", 
+            "PostGISRasterRasterBand::IWriteBlock(): "
+            "No empty raster exists to which data can be written");
+
+        return CE_Failure; 
+    }
+    
+    /**
+     * If more than one tuples, we have a possible overlap.
+     * Overlaps in write case are not yet handled.
+     **/
+    else if (PQntuples(poResult) > 1) {
+        PQclear(poResult);
+        
+        ReportError(CE_Failure, CPLE_AppDefined, 
+            "Error writing new band as overlapping rasters detected");
+
+        CPLDebug("PostGIS_Raster", 
+            "PostGISRasterRasterBand::IWriteBlock(): "
+            "Overlapping rasters detected. No support currently");
+
+        return CE_Failure; 
+    }
+    
+    
+    /**
+     * One intersecting raster found. Check if new band is to be added
+     * or an already existing band is to be updated
+     * 
+     **/
+
+    int nPrimaryKey = atoi(PQgetvalue(poResult, 0, 0));
+    //int nBandIndex = PQgetvalue(poResult, 0, 1);
+
+    // If new band is to be added
+    if(atoi(PQgetvalue(poResult, 0, 1)) < nBand)
+    {
+        char* pszDataType = NULL;
+        if(!TranslateDataTypeGDALtoPostGIS(pszDataType, &eDataType))
+        {
+            CPLDebug("PostGIS_Raster",
+                     "PostGISRasterRasterBand::IWriteBlock(): %s",
+                     (char *)eDataType);
+            return CE_Failure;
+        }
+
+        osCommand.Printf("UPDATE %s.%s SET %s = st_addband(%s, %d, %s, %f, %f) "
+                "WHERE rid = %d;", pszSchema, pszTable, pszColumn, pszColumn, nBand,
+                pszDataType, dfNoDataValue, dfNoDataValue, nPrimaryKey);
+
+#ifdef DEBUG_QUERY
+        CPLDebug("PostGIS_Raster", 
+                "PostGISRasterRasterBand::IWriteBlock(): Query = %s", 
+                osCommand.c_str());
+#endif
+
+        poResult = PQexec(poRDS->poConn, osCommand.c_str());
+        if (poResult == NULL || 
+                PQresultStatus(poResult) != PGRES_TUPLES_OK || 
+                PQntuples(poResult) < 0) {
+
+            if (poResult)
+                PQclear(poResult);
+
+            ReportError(CE_Failure, CPLE_AppDefined, 
+                    "Error adding new band to raster");
+
+            CPLDebug("PostGIS_Raster", 
+                    "PostGISRasterRasterBand::IWriteBlock(): %s", 
+                    PQerrorMessage(poRDS->poConn));
+
+            return CE_Failure;  
+        }
+        
+    }
+
+    // Update existing band using ST_SetValues
+
+    // ST_SetValues takes a double 2D array as input
+    // Converting (void *) pImage to double
+
+    osCommand.Printf("UPDATE %s.%s SET %s = st_setvalues(%s, %d, %d, %d, ARRAY[[",
+            pszSchema, pszTable, pszColumn, pszColumn, nBand, nXOff+1, nYOff+1);
+
+    int iBufXOff, iBufYOff, iBufOffset = 0;
+    double dfPixelValue;
+//    int nRowSize = nNaturalBlockYSize * nPixelSize;
+//    double papdfInputBuffer[nNaturalBlockXSize][nNaturalBlockYSize];
+    for(iBufXOff = 0; iBufXOff < nNaturalBlockXSize; iBufXOff++)
+    {
+        for(iBufYOff = 0; iBufYOff < nNaturalBlockYSize; iBufYOff++)
+        {
+            GDALCopyWords( ((GByte *) pImage) + iBufOffset, eDataType, 0,
+                          &dfPixelValue, GDT_Float64, 0, 1 );
+            iBufOffset += nPixelSize;
+            osCommand.FormatC(dfPixelValue, NULL);
+            if(iBufYOff != (nNaturalBlockYSize - 1))
+                osCommand += ", ";
+        }
+        if(iBufXOff != (nNaturalBlockXSize - 1))
+            osCommand += "],[";
+    }
+    osCommand += "]]::double precision[][], ";
+    osCommand.FormatC(dfNoDataValue, NULL);
+    osCommand += ")";
+    osCommand += " WHERE rid = ";
+    osCommand += CPLSPrintf("%d;", nPrimaryKey);
+
+#ifdef DEBUG_QUERY
+    CPLDebug("PostGIS_Raster", 
+            "PostGISRasterRasterBand::IWriteBlock(): Query = %s", 
+            osCommand.c_str());
+#endif
+
+    poResult = PQexec(poRDS->poConn, osCommand.c_str());
+    if (poResult == NULL || 
+            PQresultStatus(poResult) != PGRES_TUPLES_OK || 
+            PQntuples(poResult) < 0) {
+
+        if (poResult)
+            PQclear(poResult);
+
+        ReportError(CE_Failure, CPLE_AppDefined, 
+                "Error updating data of band");
+
+        CPLDebug("PostGIS_Raster", 
+                "PostGISRasterRasterBand::IWriteBlock(): %s", 
+                PQerrorMessage(poRDS->poConn));
+
+        return CE_Failure;  
+    }
+    
+    PQclear(poResult);
+
+    return CE_None;
+}
+
 
 /**
  * \brief Set the no data value for this band.

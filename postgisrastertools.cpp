@@ -224,3 +224,47 @@ GBool TranslateDataType(const char * pszDataType,
     return true;
 }
 
+/***********************************************************************
+ * \brief Translate a GDALDataType object to a valid PostGIS Raster
+ * datatype string.
+ **********************************************************************/
+GBool TranslateDataTypeGDALtoPostGIS(char * pszDataType,
+        GDALDataType * poDataType)
+{
+    if (!poDataType)
+        return false;
+
+    if (EQUAL((char *)poDataType, "GDT_Byte")) {
+        pszDataType = CPLStrdup("8BUI");
+    }
+
+    else if (EQUAL((char *)poDataType, "GDT_Int16")) {
+            pszDataType = CPLStrdup("16BSI");
+    }
+
+    else if (EQUAL((char *)poDataType, "GDT_UInt16")) {
+            pszDataType = CPLStrdup("16BUI");
+    }
+
+    else if (EQUAL((char *)poDataType, "GDT_Int32")) {
+            pszDataType = CPLStrdup("32BSI");
+    }
+
+    else if (EQUAL((char *)poDataType, "GDT_UInt32")) {
+            pszDataType = CPLStrdup("32BUI");
+    }
+
+    else if (EQUAL((char *)poDataType, "GDT_Float32")) {
+            pszDataType = CPLStrdup("32BF");
+    }
+
+    else if (EQUAL((char *)poDataType, "GDT_Float64")) {
+            pszDataType = CPLStrdup("64BF");
+    }
+
+    else 
+        return false;
+
+    return true;
+}
+
