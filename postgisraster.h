@@ -168,7 +168,7 @@ char * ReplaceQuotes(const char *, int);
 char * ReplaceSingleQuotes(const char *, int);
 char ** ParseConnectionString(const char *);
 GBool TranslateDataType(const char *, GDALDataType *, int *, GBool *);
-        
+GBool TranslateDataTypeGDALtoPostGIS(char *, GDALDataType *);        
 
 class PostGISRasterRasterBand;
 class PostGISRasterTileDataset;
@@ -348,6 +348,7 @@ public:
     virtual CPLErr SetNoDataValue(double);
     virtual CPLErr IRasterIO(GDALRWFlag, int, int, int, int, void *, 
 		int, int, GDALDataType, int, int);
+    virtual CPLErr IWriteBlock(int, int, void *);
 #ifdef notdef
     virtual CPLErr IReadBlock(int, int, void *);
 #endif
