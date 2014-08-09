@@ -46,6 +46,7 @@ PostGISRasterRasterBand::PostGISRasterRasterBand(
     GBool bIsOffline = false) : 
     VRTSourcedRasterBand(poDS, nBand)
 {
+        printf("In IRasterIO\n");
     /* Basic properties */
     this->poDS = poDS;
     this->bIsOffline = bIsOffline;
@@ -328,6 +329,7 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
     int nBufYSize, GDALDataType eBufType, int nPixelSpace, 
     int nLineSpace)
 {
+        printf("In IRasterIO\n");
     /*
      * TODO: Write support not implemented yet
      
@@ -819,7 +821,7 @@ CPLErr PostGISRasterRasterBand::IWriteBlock(int nBlockXOff,
         int nBlockYOff, void * pImage)
 {
 
-        printf("In sterIO\n");
+        printf("In IWriteBlock\n");
     PGresult * poResult = NULL;
     CPLString osCommand;
     int nXOff = 0;

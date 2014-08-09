@@ -11,7 +11,7 @@
  *
  ***********************************************************************
  * Copyright (c) 2009 - 2013, Jorge Arevalo, David Zwarg
- * Copyright (c) 2013, Even Rouault
+ * Copyright (c) 2013, Even Rouault <even dot rouault at mines-paris dot org>
  *
  * Permission is hereby granted, free of charge, to any person obtaining 
  * a copy of this software and associated documentation files (the
@@ -2040,7 +2040,8 @@ GBool PostGISRasterDataset::SetRasterProperties
             "from (select srid, extent geom, num_bands nbband, "
             "scale_x, scale_y, blocksize_x, blocksize_y, same_alignment, regular_blocking from "
             "raster_columns where r_table_schema = '%s' and "
-            "r_table_name = '%s') foo", pszSchema, pszTable);
+            "r_table_name = '%s' and r_raster_column = '%s' ) foo",
+            pszSchema, pszTable, pszColumn);
             
 #ifdef DEBUG_QUERY
         CPLDebug("PostGIS_Raster", 
@@ -2809,7 +2810,7 @@ GetConnection(const char * pszFilename, char ** ppszConnectionString,
 int PostGISRasterDataset::Identify(GDALOpenInfo* poOpenInfo)
 {
     if (poOpenInfo->pszFilename == NULL ||
-        poOpenInfo->fp != NULL ||
+        poOpenInfo->fpL != NULL ||
         !EQUALN(poOpenInfo->pszFilename, "PG:", 3))
     {
         return FALSE;
@@ -3203,15 +3204,16 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
 
     // User specified SRID using creation options in write case
     if(nSrid != -1 && GetAccess() == GA_Update)
+    {
+        printf("sdg\n");
         return CE_None;
+    }
+
     CPLString osCommand;
     PGresult * poResult;
     int nFetchedSrid = -1;
-    printf("%s\n",pszProjectionRef);
-//    nSrid = 3644;
-    printf("%d\n",nSrid);
+//    printf("%s\n",pszProjectionRef);
     printf("X = %d, Y = %d, SRID = %d\n",nTileWidth,nTileHeight,nSrid);
-//    return CE_None;
     /*****************************************************************
      * Check if the dataset allows updating
      *****************************************************************/
@@ -3244,7 +3246,11 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
         // update class attribute
         nSrid = nFetchedSrid;
 */
+
+
+
     printf("%d\n",nSrid);
+/*
         osCommand.Printf("UPDATE %s.%s SET %s=st_setsrid(%s,%d)",
                     pszSchema, pszTable, pszColumn, pszColumn, nSrid);
         poResult = PQexec(poConn, osCommand.c_str());
@@ -3254,6 +3260,9 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
                     PQerrorMessage(poConn));
             return CE_Failure;
         }
+*/
+
+
 /*
         // update raster_columns table
         osCommand.Printf("UPDATE raster_columns SET srid=%d WHERE \
@@ -3319,9 +3328,14 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
 CPLErr PostGISRasterDataset::SetGeoTransform(double* padfGeoTransform) {
     if (!padfGeoTransform)
         return CE_Failure;
-
+    printf("In SetGeoTransform\n");
     memcpy(adfGeoTransform, padfGeoTransform, 6 * sizeof(double));
-
+    printf("%f,%f,%f,%f,%f,%f\n",adfGeoTransform[GEOTRSFRM_TOPLEFT_X],
+                adfGeoTransform[GEOTRSFRM_TOPLEFT_Y],
+                            adfGeoTransform[GEOTRSFRM_WE_RES],
+                                        adfGeoTransform[GEOTRSFRM_NS_RES], 
+                                                    adfGeoTransform[GEOTRSFRM_ROTATION_PARAM1],
+                                                                adfGeoTransform[GEOTRSFRM_ROTATION_PARAM2]);
     return CE_None;
 }
 
@@ -3374,9 +3388,6 @@ PostGISRasterDataset::CreateCopy( const char * pszFilename,
     GDALDataset *poGSrcDS, int bStrict, char ** papszOptions, 
     GDALProgressFunc pfnProgress, void * pProgressData ) 
 {
-//    GDALDataType edata;
-//    PostGISRasterDataset *poSrcDS123 = (PostGISRasterDataset *)PostGISRasterDataset::Create(pszFilename, 0,0,0, edata, papszOptions);
-//    return poSrcDS123;
     char* pszSchema = NULL;
     char* pszTable = NULL;
     char* pszColumn = NULL;
@@ -3722,6 +3733,15 @@ GDALDataset * PostGISRasterDataset::Create(
         const char *pszFilename, int nXSize, int nYSize,
         int nBands, GDALDataType eType, char **papszOptions)
 {
+    char* pszConnectionString = NULL;
+    char* pszSchema = NULL;
+    char* pszTable = NULL;
+    char* pszColumn = NULL;
+    char* pszWhere = NULL;
+    WorkingMode nMode = NO_MODE;
+    PGconn * poConn = NULL;
+    GBool bBrowseDatabase = false;
+    CPLString osCommand;
 
     // Checking connection string
     if (pszFilename == NULL ||
@@ -3736,9 +3756,38 @@ GDALDataset * PostGISRasterDataset::Create(
         return NULL;
     }
 
-    // Opening the Dataset
-    GDALOpenInfo poOpenInfo( pszFilename, GA_Update );
-    PostGISRasterDataset* poRDS = (PostGISRasterDataset *)Open(&poOpenInfo);
+
+    poConn = GetConnection(pszFilename,
+            &pszConnectionString, &pszSchema, &pszTable, &pszColumn,
+            &pszWhere, &nMode, &bBrowseDatabase);
+
+    if (poConn == NULL || bBrowseDatabase) {
+        CPLFree(pszConnectionString);
+        CPLFree(pszSchema);
+        CPLFree(pszTable);
+        CPLFree(pszColumn);
+        CPLFree(pszWhere);
+        return NULL;
+    }
+
+    // Creating new dataset from scratch
+    PostGISRasterDataset * poRDS = new PostGISRasterDataset();
+    poRDS->poConn = poConn;
+    poRDS->eAccess = GA_Update;
+    poRDS->nMode = nMode;
+    //poDS->poDriver = poDriver;
+
+    poRDS->pszSchema = pszSchema;
+    poRDS->pszTable = pszTable;
+    poRDS->pszColumn = pszColumn;
+    poRDS->pszWhere = pszWhere;
+
+#ifdef DEBUG_VERBOSE
+    CPLDebug("PostGIS_Raster", "Create:: connection string = %s",
+            pszConnectionString);
+#endif
+    CPLFree(pszConnectionString);
+    // Finished creating dataset
 
     printf("Dataset created\n");
     if(!poRDS)
@@ -3998,7 +4047,7 @@ GDALDataset * PostGISRasterDataset::Create(
     if(pszIndexTableSpace)
         CPLFree(pszIndexTableSpace);
 
-    printf("X = %d, Y = %d, SRID = %d\n",poRDS->nTileWidth,poRDS->nTileHeight,poRDS->nSrid);
+    printf("TileWidth = %d, TileHeight = %d, SRID = %d\n",poRDS->nTileWidth,poRDS->nTileHeight,poRDS->nSrid);
     printf("here\n");
     return poRDS;
 }
@@ -4356,7 +4405,7 @@ PostGISRasterDataset::Delete(const char* pszFilename)
     poConn = GetConnection(pszFilename, &pszConnectionString, 
         &pszSchema, &pszTable, &pszColumn, &pszWhere,
         &nMode, &bBrowseDatabase);
-    if (poConn == NULL) {
+    if (poConn == NULL || pszSchema == NULL || pszTable == NULL) {
         CPLFree(pszConnectionString);
         CPLFree(pszSchema);
         CPLFree(pszTable);
@@ -4516,6 +4565,7 @@ void GDALRegister_PostGISRaster() {
         poDriver = new PostGISRasterDriver();
 
         poDriver->SetDescription("PostGISRaster");
+        poDriver->SetMetadataItem( GDAL_DCAP_RASTER, "YES" );
         poDriver->SetMetadataItem(GDAL_DMD_LONGNAME,
                 "PostGIS Raster driver");
         poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
