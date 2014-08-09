@@ -41,6 +41,7 @@
 #include "libpq-fe.h"
 #include "vrtdataset.h"
 #include "cpl_quad_tree.h"
+#include "ogr_spatialref.h"
 #include <float.h>
 #include <map>
 
@@ -169,9 +170,12 @@ char * ReplaceSingleQuotes(const char *, int);
 char ** ParseConnectionString(const char *);
 GBool TranslateDataType(const char *, GDALDataType *, int *, GBool *);
 GBool TranslateDataTypeGDALtoPostGIS(char *, GDALDataType *);        
+CPLString EscapeString(PGconn *, const char*, int, const char*, const char*);
 
 class PostGISRasterRasterBand;
 class PostGISRasterTileDataset;
+
+#include <iostream>
 
 /***********************************************************************
  * PostGISRasterDriver: extends GDALDriver to support PostGIS Raster 
@@ -285,6 +289,7 @@ public:
     virtual char      **GetMetadataDomainList();
     char ** GetMetadata(const char *);
     const char* GetProjectionRef();
+    int FetchSRSId(OGRSpatialReference *);
     CPLErr SetProjection(const char*);
     CPLErr SetGeoTransform(double *);
     CPLErr GetGeoTransform(double *);

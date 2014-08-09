@@ -357,6 +357,7 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
 
     if (eRWFlag == GF_Write)
     {
+        printf("In IRasterIO\n");
         if(poRDS->nTileWidth != 0)
             nBlockXSize = poRDS->nTileWidth;
         if(poRDS->nTileHeight != 0)
@@ -817,6 +818,8 @@ CPLErr PostGISRasterRasterBand::IRasterIO(GDALRWFlag eRWFlag, int nXOff,
 CPLErr PostGISRasterRasterBand::IWriteBlock(int nBlockXOff, 
         int nBlockYOff, void * pImage)
 {
+
+        printf("In sterIO\n");
     PGresult * poResult = NULL;
     CPLString osCommand;
     int nXOff = 0;

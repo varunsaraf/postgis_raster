@@ -269,6 +269,14 @@ GBool TranslateDataTypeGDALtoPostGIS(char * pszDataType,
     return true;
 }
 
+int CPLStrlenUTF8(const char *pszUTF8Str) {
+    int i = 0, j = 0;
+    while (pszUTF8Str[i]) {
+        if ((pszUTF8Str[i] & 0xc0) != 0x80) j++;
+        i++;
+    }
+    return j;
+}
 
  /************************************************************************/
  /*                         EscapeString( )                         */

@@ -2926,11 +2926,13 @@ GDALDataset* PostGISRasterDataset::Open(GDALOpenInfo* poOpenInfo) {
             pszConnectionString);
 #endif
 
+/*
         if (!poDS->SetRasterProperties(pszConnectionString)) {
             CPLFree(pszConnectionString);
             delete poDS;
-            return NULL;
+            return NULL;            
         }
+*/
     }
 
     CPLFree(pszConnectionString);
@@ -2994,6 +2996,204 @@ const char* PostGISRasterDataset::GetProjectionRef() {
     return pszProjection;
 }
 
+/************************************************************************/
+/*                             FetchSRSId()                             */
+/*                                                                      */
+/*      Fetch the id corresponding to an SRS, and if not found, add     */
+/*      it to the table.                                                */
+/************************************************************************/
+
+int PostGISRasterDataset::FetchSRSId( OGRSpatialReference * poSRS )
+
+{
+    PGresult            *hResult = NULL;
+    CPLString           osCommand;
+    char                *pszWKT = NULL;
+    int                 nSRSId = -1;
+    const char*         pszAuthorityName;
+
+    if( poSRS == NULL )
+        return -1;
+
+    OGRSpatialReference oSRS(*poSRS);
+    poSRS = NULL;
+
+    pszAuthorityName = oSRS.GetAuthorityName(NULL);
+
+    if( pszAuthorityName == NULL || strlen(pszAuthorityName) == 0 )
+    {
+/* -------------------------------------------------------------------- */
+/*      Try to identify an EPSG code                                    */
+/* -------------------------------------------------------------------- */
+        oSRS.AutoIdentifyEPSG();
+
+        pszAuthorityName = oSRS.GetAuthorityName(NULL);
+        if (pszAuthorityName != NULL && EQUAL(pszAuthorityName, "EPSG"))
+        {
+            const char* pszAuthorityCode = oSRS.GetAuthorityCode(NULL);
+            if ( pszAuthorityCode != NULL && strlen(pszAuthorityCode) > 0 )
+            {
+                /* Import 'clean' SRS */
+                oSRS.importFromEPSG( atoi(pszAuthorityCode) );
+
+                pszAuthorityName = oSRS.GetAuthorityName(NULL);
+            }
+        }
+    }
+/* -------------------------------------------------------------------- */
+/*      Check whether the EPSG authority code is already mapped to a    */
+/*      SRS ID.                                                         */
+/* -------------------------------------------------------------------- */
+    if( pszAuthorityName != NULL && EQUAL( pszAuthorityName, "EPSG" ) )
+    {
+        int             nAuthorityCode;
+
+        /* For the root authority name 'EPSG', the authority code
+         * should always be integral
+         */
+        nAuthorityCode = atoi( oSRS.GetAuthorityCode(NULL) );
+
+        osCommand.Printf("SELECT srid FROM spatial_ref_sys WHERE "
+                         "auth_name = '%s' AND auth_srid = %d",
+                         pszAuthorityName,
+                         nAuthorityCode );
+        hResult = PQexec(poConn, osCommand.c_str());
+
+        if( hResult && PQresultStatus(hResult) == PGRES_TUPLES_OK
+            && PQntuples(hResult) > 0 )
+        {
+            nSRSId = atoi(PQgetvalue( hResult, 0, 0 ));
+
+            PQclear( hResult );
+
+            return nSRSId;
+        }
+
+        PQclear( hResult );
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Translate SRS to WKT.                                           */
+/* -------------------------------------------------------------------- */
+    if( oSRS.exportToWkt( &pszWKT ) != OGRERR_NONE )
+    {
+        CPLFree(pszWKT);
+        return -1;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Try to find in the existing table.                              */
+/* -------------------------------------------------------------------- */
+    hResult = PQexec(poConn, "BEGIN");
+    PQclear( hResult );
+
+    CPLString osWKT = EscapeString(poConn, pszWKT, -1, "spatial_ref_sys", "srtext");
+    osCommand.Printf(
+             "SELECT srid FROM spatial_ref_sys WHERE srtext = %s",
+             osWKT.c_str() );
+    hResult = PQexec(poConn, osCommand.c_str() );
+    CPLFree( pszWKT );  // CM:  Added to prevent mem leaks
+    pszWKT = NULL;      // CM:  Added
+
+/* -------------------------------------------------------------------- */
+/*      We got it!  Return it.                                          */
+/* -------------------------------------------------------------------- */
+    if( hResult && PQresultStatus(hResult) == PGRES_TUPLES_OK
+        && PQntuples(hResult) > 0 )
+    {
+        nSRSId = atoi(PQgetvalue( hResult, 0, 0 ));
+
+        PQclear( hResult );
+
+        hResult = PQexec(poConn, "COMMIT");
+        PQclear( hResult );
+
+        return nSRSId;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      If the command actually failed, then the metadata table is      */
+/*      likely missing. Try defining it.                                */
+/* -------------------------------------------------------------------- */
+/*
+    int         bTableMissing;
+
+    bTableMissing =
+        hResult == NULL || PQresultStatus(hResult) == PGRES_NONFATAL_ERROR;
+
+    PQclear( hResult );
+
+    hResult = PQexec(poConn, "COMMIT");
+    PQclear( hResult );
+
+    if( bTableMissing )
+    {
+        if( InitializeMetadataTables() != OGRERR_NONE )
+            return -1;
+    }
+*/
+/* -------------------------------------------------------------------- */
+/*      Get the current maximum srid in the srs table.                  */
+/* -------------------------------------------------------------------- */
+    hResult = PQexec(poConn, "BEGIN");
+    PQclear( hResult );
+
+    hResult = PQexec(poConn, "SELECT MAX(srid) FROM spatial_ref_sys" );
+
+    if( hResult && PQresultStatus(hResult) == PGRES_TUPLES_OK )
+    {
+        nSRSId = atoi(PQgetvalue(hResult,0,0)) + 1;
+        PQclear( hResult );
+    }
+    else
+    {
+        nSRSId = 1;
+    }
+
+/* -------------------------------------------------------------------- */
+/*      Try adding the SRS to the SRS table.                            */
+/* -------------------------------------------------------------------- */
+    char    *pszProj4 = NULL;
+    if( oSRS.exportToProj4( &pszProj4 ) != OGRERR_NONE )
+    {
+        CPLFree( pszProj4 );
+        return -1;
+    }
+
+    CPLString osProj4 = EscapeString(poConn, pszProj4, -1, "spatial_ref_sys", "proj4text");
+
+    if( pszAuthorityName != NULL && EQUAL(pszAuthorityName, "EPSG") )
+    {
+        int             nAuthorityCode;
+
+        nAuthorityCode = atoi( oSRS.GetAuthorityCode(NULL) );
+
+        osCommand.Printf(
+                 "INSERT INTO spatial_ref_sys (srid,srtext,proj4text,auth_name,auth_srid) "
+                 "VALUES (%d, %s, %s, '%s', %d)",
+                 nSRSId, osWKT.c_str(), osProj4.c_str(),
+                 pszAuthorityName, nAuthorityCode );
+    }
+    else
+    {
+        osCommand.Printf(
+                 "INSERT INTO spatial_ref_sys (srid,srtext,proj4text) VALUES (%d,%s,%s)",
+                 nSRSId, osWKT.c_str(), osProj4.c_str() );
+    }
+
+    // Free everything that was allocated.
+    CPLFree( pszProj4 );
+    CPLFree( pszWKT);
+
+    hResult = PQexec(poConn, osCommand.c_str() );
+    PQclear( hResult );
+
+    hResult = PQexec(poConn, "COMMIT");
+    PQclear( hResult );
+
+    return nSRSId;
+}
+
 /**********************************************************
  * \brief Set projection definition. The input string must
  * be in OGC WKT or PROJ.4 format
@@ -3001,25 +3201,36 @@ const char* PostGISRasterDataset::GetProjectionRef() {
 CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
     VALIDATE_POINTER1(pszProjectionRef, "SetProjection", CE_Failure);
 
+    // User specified SRID using creation options in write case
+    if(nSrid != -1 && GetAccess() == GA_Update)
+        return CE_None;
     CPLString osCommand;
     PGresult * poResult;
     int nFetchedSrid = -1;
-
-
+    printf("%s\n",pszProjectionRef);
+//    nSrid = 3644;
+    printf("%d\n",nSrid);
+//    return CE_None;
     /*****************************************************************
      * Check if the dataset allows updating
      *****************************************************************/
+/*     
     if (GetAccess() != GA_Update) {
         ReportError(CE_Failure, CPLE_NoWriteAccess,
                 "This driver doesn't allow write access");
         return CE_Failure;
     }
-
+*/
     /*****************************************************************
      * Look for projection with this text
      *****************************************************************/
 
     // First, WKT text
+    OGRSpatialReference oSRS(pszProjectionRef);
+    nSrid = FetchSRSId(&oSRS);
+    if(nSrid != -1)
+    {    
+/*
     osCommand.Printf("SELECT srid FROM spatial_ref_sys where srtext='%s'",
             pszProjectionRef);
     poResult = PQexec(poConn, osCommand.c_str());
@@ -3031,11 +3242,21 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
 
         // update class attribute
         nSrid = nFetchedSrid;
-
-
+*/
+    printf("%d\n",nSrid);
+        osCommand.Printf("UPDATE %s.%s SET %s=st_setsrid(%s,%d)",
+                    pszSchema, pszTable, pszColumn, pszColumn, nSrid);
+        poResult = PQexec(poConn, osCommand.c_str());
+        if (poResult == NULL || PQresultStatus(poResult) != PGRES_COMMAND_OK) {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                    "Couldn't update raster_columns table: %s",
+                    PQerrorMessage(poConn));
+            return CE_Failure;
+        }
+/*
         // update raster_columns table
         osCommand.Printf("UPDATE raster_columns SET srid=%d WHERE \
-                    r_table_name = '%s' AND r_column = '%s'",
+                    r_table_name = '%s' AND r_raster_column = '%s'",
                 nSrid, pszTable, pszColumn);
         poResult = PQexec(poConn, osCommand.c_str());
         if (poResult == NULL || PQresultStatus(poResult) != PGRES_COMMAND_OK) {
@@ -3046,9 +3267,10 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
         }
 
         // TODO: Update ALL blocks with the new srid...
-
+*/
         return CE_None;
     }
+    
         // If not, proj4 text
     else {
         osCommand.Printf(
@@ -3063,10 +3285,10 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
 
             // update class attribute
             nSrid = nFetchedSrid;
-
+/*
             // update raster_columns table
             osCommand.Printf("UPDATE raster_columns SET srid=%d WHERE \
-                    r_table_name = '%s' AND r_column = '%s'",
+                    r_table_name = '%s' AND r_raster_column = '%s'",
                     nSrid, pszTable, pszColumn);
 
             poResult = PQexec(poConn, osCommand.c_str());
@@ -3079,7 +3301,7 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
             }
 
             // TODO: Update ALL blocks with the new srid...
-
+*/
             return CE_None;
         }
         else {
@@ -3141,14 +3363,19 @@ char **PostGISRasterDataset::GetFileList()
 	return NULL;
 }
 
+#ifdef notdef
 /********************************************************
  * \brief Create a copy of a PostGIS Raster dataset.
  ********************************************************/
+
 GDALDataset * 
 PostGISRasterDataset::CreateCopy( const char * pszFilename,
     GDALDataset *poGSrcDS, int bStrict, char ** papszOptions, 
     GDALProgressFunc pfnProgress, void * pProgressData ) 
 {
+//    GDALDataType edata;
+//    PostGISRasterDataset *poSrcDS123 = (PostGISRasterDataset *)PostGISRasterDataset::Create(pszFilename, 0,0,0, edata, papszOptions);
+//    return poSrcDS123;
     char* pszSchema = NULL;
     char* pszTable = NULL;
     char* pszColumn = NULL;
@@ -3437,6 +3664,8 @@ PostGISRasterDataset::CreateCopy( const char * pszFilename,
 
     return poSubDS;
 }
+#endif
+
 
 /********************************************************
  * \brief Helper method to insert a new raster.
@@ -3510,10 +3739,17 @@ GDALDataset * PostGISRasterDataset::Create(
     GDALOpenInfo poOpenInfo( pszFilename, GA_Update );
     PostGISRasterDataset* poRDS = (PostGISRasterDataset *)Open(&poOpenInfo);
 
+    printf("Dataset created\n");
     if(!poRDS)
     {
         return NULL;
     }
+    poRDS->nRasterXSize = nXSize;
+    poRDS->nRasterYSize = nYSize;
+//    poRDS->nSrid = 0;
+
+    printf("%s,%s,%s,%s\n",poRDS->pszSchema,poRDS->pszTable,poRDS->pszColumn,poRDS->pszProjection);
+    printf("X = %d, Y = %d, SRID = %d\n",poRDS->nRasterXSize,poRDS->nRasterYSize,poRDS->nSrid);
 
 /*
     PGconn * poConn = NULL;
@@ -3532,12 +3768,18 @@ GDALDataset * PostGISRasterDataset::Create(
     GBool bConstraints, bOutDB, bIndex, bVacuum, bCopy;
     GBool bMaxExtent = 1;
     
+    printf("In creation options\n");
     pszFetched = CSLFetchNameValue(papszOptions, "TABLEOPTION");
     if(pszFetched)
     {
+    printf("TABLEOPTION\n");
         pszTableOption = CPLStrdup(pszFetched);
     }
-
+    else
+    {
+    printf("TABLEOPTION\n");
+        pszTableOption = CPLStrdup("NEW");
+    }
     pszFetched = CSLFetchNameValue(papszOptions, "BLOCKING");
 /*
     if(pszFetched)
@@ -3547,6 +3789,7 @@ GDALDataset * PostGISRasterDataset::Create(
 */
     if(pszFetched != NULL && !EQUAL(pszFetched, "NO"))
     {
+    printf("BLOCKING\n");
         pszFetched = CSLFetchNameValueDef(papszOptions, "BLOCKXSIZE","128");
         if(pszFetched)
         {
@@ -3563,6 +3806,7 @@ GDALDataset * PostGISRasterDataset::Create(
     bConstraints = (bool) CSLFetchBoolean(papszOptions, "CONSTRAINTS", FALSE );
     if(bConstraints)
     {
+    printf("CONSTRAINTS\n");
         poRDS->bRegularBlocking = (bool) CSLFetchBoolean(papszOptions, "REGULARBLOCKING", FALSE );
         bMaxExtent = (bool) CSLFetchBoolean(papszOptions, "MAXEXTENT", TRUE );
     }
@@ -3570,14 +3814,17 @@ GDALDataset * PostGISRasterDataset::Create(
     pszFetched = CSLFetchNameValue(papszOptions, "SRID");
     if(pszFetched)
     {
+    printf("SRID\n");
         poRDS->nSrid = atoi(pszFetched);
     }
 
     bOutDB = (bool) CSLFetchBoolean(papszOptions, "OUTDB", FALSE);
+    printf("OUTDB\n");
 
     pszFetched = CSLFetchNameValue(papszOptions, "FILENAME");
     if(pszFetched)
     {
+    printf("FILENAME\n");
         pszInputFilename = CPLStrdup(pszFetched);
     }
 
@@ -3596,10 +3843,12 @@ GDALDataset * PostGISRasterDataset::Create(
     {
         pszIndexTableSpace = CPLStrdup(pszFetched);
     }
+    printf("INDEX\n");
 
     // Validating the creation options
     if(EQUAL(pszTableOption, "APPEND"))
     {
+    printf("APPEND\n");
         if(pszInputFilename)
         {
             CPLError(CE_Failure, CPLE_IllegalArg, 
@@ -3608,6 +3857,7 @@ GDALDataset * PostGISRasterDataset::Create(
             poRDS = NULL;
             return NULL;
         }
+    printf("APPEND\n");
         if(pszTableSpace)
         {
             CPLError(CE_Failure, CPLE_IllegalArg, 
@@ -3616,7 +3866,9 @@ GDALDataset * PostGISRasterDataset::Create(
             poRDS = NULL;
             return NULL;
         }
+    printf("APPEND\n");
     }
+    printf("APPEND\n");
 
     if(!bConstraints)
     {
@@ -3637,12 +3889,15 @@ GDALDataset * PostGISRasterDataset::Create(
             return NULL;
         }
     }
+    printf("REGULARBLOCKING\n");
 
+    printf("Out of creation options\n");
     // Creating/Appending table
     
     // Drop table
     if(EQUAL(pszTableOption, "DROP"))
     {
+    printf("Drop table\n");
         if(!poRDS->DropTable())
         {
             delete poRDS;
@@ -3650,10 +3905,12 @@ GDALDataset * PostGISRasterDataset::Create(
             return NULL;
         }
     }
+    printf("Drop table\n");
 
     // Create table
     if(!EQUAL(pszTableOption, "APPEND"))
     {
+    printf("Append table\n");
         if(!poRDS->CreateTable(pszInputFilename, pszTableSpace, pszIndexTableSpace))
         {
             delete poRDS;
@@ -3661,15 +3918,19 @@ GDALDataset * PostGISRasterDataset::Create(
             return NULL;
         }
     }
+    printf("Append table\n");
 
     // Insert empty raster
-    if(poRDS->nRasterXSize == 0 || poRDS->nRasterYSize == 0 || poRDS->nSrid == -1 ||
+    if(poRDS->nRasterXSize == 0 || poRDS->nRasterYSize == 0 ||
         !poRDS->InsertEmptyRaster(pszInputFilename))
     {
+    printf("Empty raster added\n");
+    printf("X = %d, Y = %d, SRID = %d\n",poRDS->nRasterXSize,poRDS->nRasterYSize,poRDS->nSrid);
             delete poRDS;
             poRDS = NULL;
             return NULL;
     }
+    printf("Empty raster added\n");
 
 
     // Create index
@@ -3688,6 +3949,7 @@ GDALDataset * PostGISRasterDataset::Create(
             return NULL;
         }
     }
+    printf("Create index\n");
 
     // Add constraints
     if(bConstraints)
@@ -3699,6 +3961,7 @@ GDALDataset * PostGISRasterDataset::Create(
             return NULL;
         }
     }
+    printf("Raster Constraints\n");
 
     // Maintain(Vacuum) table
     if(bVacuum)
@@ -3710,7 +3973,10 @@ GDALDataset * PostGISRasterDataset::Create(
             return NULL;
         }
     }
+    printf("Vacuum table\n");
 
+//    if(pszFetched)
+//        CPLFree(pszFetched);
     if(pszTableOption)
         CPLFree(pszTableOption);
     if(pszInputFilename)
@@ -3720,6 +3986,7 @@ GDALDataset * PostGISRasterDataset::Create(
     if(pszIndexTableSpace)
         CPLFree(pszIndexTableSpace);
 
+    printf("here\n");
     return poRDS;
 }
 
@@ -4239,6 +4506,8 @@ void GDALRegister_PostGISRaster() {
         poDriver->SetMetadataItem(GDAL_DMD_LONGNAME,
                 "PostGIS Raster driver");
         poDriver->SetMetadataItem( GDAL_DMD_SUBDATASETS, "YES" );
+        poDriver->SetMetadataItem( GDAL_DCAP_CREATE, "YES" );
+        poDriver->SetMetadataItem( GDAL_DCAP_CREATECOPY, "NO" );
         poDriver->SetMetadataItem( GDAL_DMD_CREATIONOPTIONLIST,
 "<CreationOptionList>"
     "<Option name='TABLEOPTION' type='string-select' description='Table creation option' default='NEW'>"
@@ -4300,7 +4569,7 @@ void GDALRegister_PostGISRaster() {
         poDriver->pfnOpen = PostGISRasterDataset::Open;
         poDriver->pfnIdentify = PostGISRasterDataset::Identify;
         poDriver->pfnCreate = PostGISRasterDataset::Create;
-        poDriver->pfnCreateCopy = PostGISRasterDataset::CreateCopy;
+//        poDriver->pfnCreateCopy = PostGISRasterDataset::CreateCopy;
         poDriver->pfnDelete = PostGISRasterDataset::Delete;
 
         GetGDALDriverManager()->RegisterDriver(poDriver);
