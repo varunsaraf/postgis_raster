@@ -256,6 +256,16 @@ private:
     GBool AddComplexSource(PostGISRasterTileDataset* poRTDS);
     GBool GetDstWin(PostGISRasterTileDataset *, int *, int *, int *, 
 		int *);
+
+    GBool InsertEmptyRaster(const char *);
+    GBool DropTable();
+    GBool CreateTable(const char *, const char *, const char *);
+    GBool CopyFrom(const char *);
+    GBool CreateIndex(const char *);
+    GBool AnalyzeTable();
+    GBool VacuumTable();
+    GBool AddRasterConstraints(GBool, GBool);
+
     BandMetadata * GetBandsMetadata(int *);
     PROverview * GetOverviewTables(int *);
     
@@ -294,17 +304,6 @@ public:
     CPLErr SetGeoTransform(double *);
     CPLErr GetGeoTransform(double *);
     char **GetFileList();
-
-    GBool InsertEmptyRaster(const char *);
-    GBool DropTable();
-    GBool CreateTable(const char *, const char *, const char *);
-    GBool CopyFrom(const char *);
-    GBool CreateIndex(const char *);
-    GBool AnalyzeTable();
-    GBool VacuumTable();
-    GBool AddRasterConstraints(GBool, GBool);
-
-
 
     int    GetOverviewCount();
     PostGISRasterDataset* GetOverviewDS(int iOvr);

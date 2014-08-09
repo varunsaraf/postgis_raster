@@ -3210,6 +3210,7 @@ CPLErr PostGISRasterDataset::SetProjection(const char * pszProjectionRef) {
     printf("%s\n",pszProjectionRef);
 //    nSrid = 3644;
     printf("%d\n",nSrid);
+    printf("X = %d, Y = %d, SRID = %d\n",nTileWidth,nTileHeight,nSrid);
 //    return CE_None;
     /*****************************************************************
      * Check if the dataset allows updating
@@ -3746,6 +3747,8 @@ GDALDataset * PostGISRasterDataset::Create(
     }
     poRDS->nRasterXSize = nXSize;
     poRDS->nRasterYSize = nYSize;
+//    poRDS->nTileWidth = nXSize;
+//    poRDS->nTileHeight = nYSize;
 //    poRDS->nSrid = 0;
 
     printf("%s,%s,%s,%s\n",poRDS->pszSchema,poRDS->pszTable,poRDS->pszColumn,poRDS->pszProjection);
@@ -3765,7 +3768,7 @@ GDALDataset * PostGISRasterDataset::Create(
     char *pszInputFilename = NULL;
     char *pszTableSpace = NULL;
     char *pszIndexTableSpace = NULL;
-    GBool bConstraints, bOutDB, bIndex, bVacuum, bCopy;
+    GBool bEnableBlocking,bConstraints, bOutDB, bIndex, bVacuum, bCopy;
     GBool bMaxExtent = 1;
     
     printf("In creation options\n");
@@ -3780,14 +3783,16 @@ GDALDataset * PostGISRasterDataset::Create(
     printf("TABLEOPTION\n");
         pszTableOption = CPLStrdup("NEW");
     }
-    pszFetched = CSLFetchNameValue(papszOptions, "BLOCKING");
+//    pszFetched = CSLFetchNameValue(papszOptions, "BLOCKING");
 /*
     if(pszFetched)
     {
         pszBlocking = CPLStrdup(pszFetched);
     }
 */
-    if(pszFetched != NULL && !EQUAL(pszFetched, "NO"))
+    bEnableBlocking = (bool) CSLFetchBoolean(papszOptions, "BLOCKING", FALSE);
+//    if(pszFetched != NULL && !EQUAL(pszFetched, "NO"))
+    if(bEnableBlocking)
     {
     printf("BLOCKING\n");
         pszFetched = CSLFetchNameValueDef(papszOptions, "BLOCKXSIZE","128");
@@ -3802,6 +3807,11 @@ GDALDataset * PostGISRasterDataset::Create(
             poRDS->nTileHeight = MIN(MAX_BLOCK_SIZE, atoi(pszFetched));
         }
     }
+
+    if(poRDS->nTileWidth == 0 || poRDS->nTileWidth > poRDS->nRasterXSize)
+        poRDS->nTileWidth = poRDS->nRasterXSize;
+    if(poRDS->nTileHeight == 0 || poRDS->nTileHeight > poRDS->nRasterYSize)
+        poRDS->nTileHeight = poRDS->nRasterYSize;
 
     bConstraints = (bool) CSLFetchBoolean(papszOptions, "CONSTRAINTS", FALSE );
     if(bConstraints)
@@ -3948,6 +3958,7 @@ GDALDataset * PostGISRasterDataset::Create(
             poRDS = NULL;
             return NULL;
         }
+    printf("Create index\n");
     }
     printf("Create index\n");
 
@@ -3972,6 +3983,7 @@ GDALDataset * PostGISRasterDataset::Create(
             poRDS = NULL;
             return NULL;
         }
+    printf("Vacuum table\n");
     }
     printf("Vacuum table\n");
 
@@ -3986,6 +3998,7 @@ GDALDataset * PostGISRasterDataset::Create(
     if(pszIndexTableSpace)
         CPLFree(pszIndexTableSpace);
 
+    printf("X = %d, Y = %d, SRID = %d\n",poRDS->nTileWidth,poRDS->nTileHeight,poRDS->nSrid);
     printf("here\n");
     return poRDS;
 }
