@@ -33,8 +33,9 @@
  * SOFTWARE.
  **********************************************************************/
  #include "postgisraster.h"
- 
- 
+ #include "cpl_conv.h"
+ #include "cpl_error.h"
+ #include "cpl_string.h" 
  /**********************************************************************
  * \brief Replace the quotes by single quotes in the input string
  *
@@ -268,3 +269,67 @@ GBool TranslateDataTypeGDALtoPostGIS(char * pszDataType,
     return true;
 }
 
+
+ /************************************************************************/
+ /*                         EscapeString( )                         */
+ /************************************************************************/
+
+CPLString EscapeString(PGconn *hPGConn,
+        const char* pszStrValue, int nMaxLength,
+        const char* pszTableName,
+        const char* pszFieldName )
+{
+    CPLString osCommand;
+
+    /* We need to quote and escape string fields. */
+    osCommand += "'";
+
+
+    int nSrcLen = strlen(pszStrValue);
+    int nSrcLenUTF = CPLStrlenUTF8(pszStrValue);
+
+    if (nMaxLength > 0 && nSrcLenUTF > nMaxLength)
+    {
+        CPLDebug( "PG",
+                "Truncated %s.%s field value '%s' to %d characters.",
+                pszTableName, pszFieldName, pszStrValue, nMaxLength );
+        nSrcLen = nSrcLen * nMaxLength / nSrcLenUTF;
+
+
+        while( nSrcLen > 0 && ((unsigned char *) pszStrValue)[nSrcLen-1] > 127 )
+        {
+            CPLDebug( "PG", "Backup to start of multi-byte character." );
+            nSrcLen--;
+        }
+    }
+
+    char* pszDestStr = (char*)CPLMalloc(2 * nSrcLen + 1);
+
+    /* -------------------------------------------------------------------- */
+    /*  PQescapeStringConn was introduced in PostgreSQL security releases   */
+    /*  8.1.4, 8.0.8, 7.4.13, 7.3.15                                        */
+    /*  PG_HAS_PQESCAPESTRINGCONN is added by a test in 'configure'         */
+    /*  so it is not set by default when building OGR for Win32             */
+    /* -------------------------------------------------------------------- */
+#if defined(PG_HAS_PQESCAPESTRINGCONN)
+    int nError;
+    PQescapeStringConn (hPGConn, pszDestStr, pszStrValue, nSrcLen, &nError);
+    if (nError == 0)
+        osCommand += pszDestStr;
+    else
+        CPLError(CE_Warning, CPLE_AppDefined, 
+                "PQescapeString(): %s\n"
+                "  input: '%s'\n"
+                "    got: '%s'\n",
+                PQerrorMessage( hPGConn ),
+                pszStrValue, pszDestStr );
+#else
+    PQescapeString(pszDestStr, pszStrValue, nSrcLen);
+    osCommand += pszDestStr;
+#endif
+    CPLFree(pszDestStr);
+
+    osCommand += "'";
+
+    return osCommand;
+}
